@@ -1,6 +1,7 @@
 import { Parser } from "./parser.js";
 import { DanbooruParser } from "./danbooru.js";
 import { Rule34XxxParser } from "./rule34xxx.js";
+import { Rule34UsParser } from "./rule34us.js";
 
 class UnsupportedParser extends Parser {
   canHandle(_url) {
@@ -15,6 +16,7 @@ class UnsupportedParser extends Parser {
 const parserRegistry = [
   new DanbooruParser(),
   new Rule34XxxParser(),
+  new Rule34UsParser(),
   new UnsupportedParser()
 ];
 

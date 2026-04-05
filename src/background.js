@@ -222,6 +222,85 @@ async function captureCurrentPostResponse() {
         }
       }
 
+      class Rule34UsParser extends Parser {
+        canHandle(url) {
+          return (
+            url.hostname === "rule34.us" &&
+            url.pathname.endsWith("/index.php") &&
+            url.searchParams.get("r") === "posts/view" &&
+            !!url.searchParams.get("id")
+          );
+        }
+
+        parse(document, url) {
+          const postId =
+            url.searchParams.get("id") ||
+            extractStatsValueUs(document, "Id") ||
+            undefined;
+
+          const originalLink = findOriginalLinkUs(document);
+          const imageUrl = originalLink?.href || null;
+
+          if (!imageUrl) {
+            throw new Error("Rule34.us parser: original image URL not found.");
+          }
+
+          const tags = [
+            ...extractTagGroupUs(document, "artist-tag"),
+            ...extractTagGroupUs(document, "character-tag"),
+            ...extractTagGroupUs(document, "general-tag"),
+            ...extractTagGroupUs(document, "metadata-tag")
+          ];
+
+          const rawTagString = tags.join(" ");
+
+          let imageExtension;
+          try {
+            const pathname = new URL(imageUrl, url.href).pathname;
+            imageExtension = pathname.split(".").pop()?.toLowerCase() || undefined;
+          } catch {
+            imageExtension = undefined;
+          }
+
+          return {
+            sourceSite: "rule34.us",
+            postUrl: url.href,
+            imageUrl,
+            imageExtension,
+            tags,
+            rawTagString,
+            postId
+          };
+        }
+      }
+
+      function findOriginalLinkUs(document) {
+        return Array.from(document.querySelectorAll("a")).find((a) => {
+          const text = a.textContent?.trim().toLowerCase();
+          return text === "original";
+        }) || null;
+      }
+
+      function extractStatsValueUs(document, label) {
+        const items = Array.from(document.querySelectorAll("li"));
+        const match = items.find((li) =>
+          li.textContent?.trim().toLowerCase().startsWith(`${label.toLowerCase()}:`)
+        );
+
+        if (!match) {
+          return null;
+        }
+
+        const text = match.textContent.trim();
+        return text.slice(label.length + 1).trim() || null;
+      }
+
+      function extractTagGroupUs(document, className) {
+        return Array.from(document.querySelectorAll(`li.${className} > a`))
+          .map((a) => a.textContent?.trim())
+          .filter(Boolean);
+      }
+
       function extractStatsValue(document, label) {
         const stats = document.querySelector("#stats");
         if (!stats) return null;
@@ -276,7 +355,8 @@ async function captureCurrentPostResponse() {
 
       const parserRegistry = [
         new DanbooruParser(),
-        new Rule34XxxParser()
+        new Rule34XxxParser(),
+        new Rule34UsParser()
       ];
       const parser = parserRegistry.find((p) => p.canHandle(url)) ?? null;
 

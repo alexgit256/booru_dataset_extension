@@ -8,7 +8,8 @@
     "https://danbooru.donmai.us/*",
     "https://cdn.donmai.us/*",
     "https://rule34.xxx/*",
-    "https://wimg.rule34.xxx/*"
+    "https://wimg.rule34.xxx/*",
+    "https://rule34.us/*"
   ],
     "action": {
     "default_popup": "src/popup.html"
