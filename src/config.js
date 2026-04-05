@@ -6,7 +6,8 @@ export const DEFAULT_SETTINGS = {
 };
 
 export const STORAGE_KEYS = {
-  settings: "settings"
+  settings: "settings",
+  nextIndexByDirectory: "nextIndexByDirectory"
 };
 
 export const MESSAGE_TYPES = {

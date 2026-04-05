@@ -5,6 +5,7 @@ import { formatTagsFileContent, formatDebugTagsFileContent } from "./formatter.j
 
 const formatter = new TagFormatter();
 const fileManager = new FileManager();
+let captureInProgress = false;
 
 chrome.runtime.onInstalled.addListener(async () => {
   const existing = await chrome.storage.local.get(STORAGE_KEYS.settings);
@@ -37,7 +38,28 @@ async function handleMessage(message) {
       return await saveSettingsResponse(message.payload);
 
     case MESSAGE_TYPES.CAPTURE_CURRENT_POST:
-      return await captureCurrentPostResponse();
+      if (captureInProgress) {
+        return {
+          ok: false,
+          error: "Capture already in progress."
+        };
+      }
+
+      captureInProgress = true;
+
+      try {
+        return await captureCurrentPostResponse();
+      } finally {
+        captureInProgress = false;
+      }
+
+      captureInProgress = true;
+
+      try {
+        return await captureCurrentPostResponse();
+      } finally {
+        captureInProgress = false;
+      }
 
     default:
       return {
@@ -59,6 +81,8 @@ async function saveSettingsResponse(partial) {
     ...normalizeSettings(partial)
   };
   await chrome.storage.local.set({ [STORAGE_KEYS.settings]: next });
+
+  await syncNextIndexFloor(settings.workingDirectory, index);
   return { ok: true, settings: next };
 }
 
@@ -290,7 +314,7 @@ async function captureCurrentPostResponse() {
   }
 
   const settings = await readSettings();
-  const index = await fileManager.findNextFreeIndex(settings.workingDirectory);
+  const index = await reserveNextIndex(settings.workingDirectory);
 
   const imageExtension =
     pageResult.imageExtension || guessExtensionFromUrl(pageResult.imageUrl) || "jpg";
@@ -388,6 +412,41 @@ function normalizeSettings(partial = {}) {
         .replace(/[^a-zA-Z0-9]/g, "")
         .toLowerCase() || DEFAULT_SETTINGS.tagFileExtension
   };
+}
+
+async function reserveNextIndex(directory) {
+  const dir = fileManager.sanitizeDirectoryName(directory);
+  const store = await chrome.storage.local.get(STORAGE_KEYS.nextIndexByDirectory);
+  const map = { ...(store[STORAGE_KEYS.nextIndexByDirectory] || {}) };
+
+  let next = map[dir];
+
+  if (!Number.isInteger(next)) {
+    const scanned = await fileManager.findNextFreeIndex(dir);
+    next = scanned;
+  }
+
+  map[dir] = next + 1;
+
+  await chrome.storage.local.set({
+    [STORAGE_KEYS.nextIndexByDirectory]: map
+  });
+
+  return next;
+}
+
+async function syncNextIndexFloor(directory, usedIndex) {
+  const dir = fileManager.sanitizeDirectoryName(directory);
+  const store = await chrome.storage.local.get(STORAGE_KEYS.nextIndexByDirectory);
+  const map = { ...(store[STORAGE_KEYS.nextIndexByDirectory] || {}) };
+  const current = map[dir];
+
+  if (!Number.isInteger(current) || current <= usedIndex) {
+    map[dir] = usedIndex + 1;
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.nextIndexByDirectory]: map
+    });
+  }
 }
 
 function guessExtensionFromUrl(url) {
