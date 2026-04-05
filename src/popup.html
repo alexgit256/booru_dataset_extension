@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Booru Dataset Saver</title>
+    <link rel="stylesheet" href="./popup.css" />
+  </head>
+  <body>
+    <main class="app">
+      <h1>Booru Dataset Saver</h1>
+
+      <form id="settings-form" class="panel">
+        <label>
+          <span>Working directory under Downloads</span>
+          <input id="workingDirectory" name="workingDirectory" type="text" placeholder="booru_dataset" required />
+        </label>
+
+        <label>
+          <span>Minimum decimal digits</span>
+          <input id="digits" name="digits" type="number" min="1" step="1" value="4" required />
+        </label>
+
+        <label>
+          <span>Optional filename prefix</span>
+          <input id="imagePrefix" name="imagePrefix" type="text" placeholder="" />
+        </label>
+
+        <label>
+          <span>Tag file extension</span>
+          <input id="tagFileExtension" name="tagFileExtension" type="text" value="txt" required />
+        </label>
+
+        <div class="actions">
+          <button type="submit">Save settings</button>
+          <button id="captureButton" type="button">Save current post</button>
+        </div>
+      </form>
+
+      <section class="panel">
+        <h2>Status</h2>
+        <pre id="status">Ready.</pre>
+      </section>
+
+      <section class="panel muted">
+        <h2>Current implementation</h2>
+        <ul>
+          <li>Saves into a subfolder of Downloads.</li>
+          <li>Scans previous downloads to choose the next free numeric index.</li>
+          <li>Automatically expands padding for new files when the index grows.</li>
+          <li>Site-specific parsers are intentionally left unimplemented.</li>
+        </ul>
+      </section>
+    </main>
+
+    <script type="module" src="./popup.js"></script>
+  </body>
+</html>

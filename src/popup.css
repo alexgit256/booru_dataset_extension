@@ -1,0 +1,95 @@
+:root {
+  color-scheme: dark;
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+body {
+  margin: 0;
+  min-width: 360px;
+  background: #16181d;
+  color: #f3f5f7;
+}
+
+.app {
+  padding: 14px;
+}
+
+h1, h2 {
+  margin: 0 0 10px;
+}
+
+h1 {
+  font-size: 18px;
+}
+
+h2 {
+  font-size: 14px;
+}
+
+.panel {
+  background: #20242c;
+  border: 1px solid #2d3440;
+  border-radius: 10px;
+  padding: 12px;
+  margin-bottom: 12px;
+}
+
+.panel.muted {
+  color: #c9d1d9;
+}
+
+label {
+  display: block;
+  margin-bottom: 10px;
+}
+
+label span {
+  display: block;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: #c5cdd8;
+}
+
+input {
+  width: 100%;
+  box-sizing: border-box;
+  border-radius: 8px;
+  border: 1px solid #414b59;
+  background: #11151b;
+  color: #f3f5f7;
+  padding: 8px 10px;
+}
+
+.actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+button {
+  flex: 1;
+  border: 0;
+  border-radius: 8px;
+  padding: 10px;
+  cursor: pointer;
+  background: #4d7cff;
+  color: white;
+  font-weight: 600;
+}
+
+button:last-child {
+  background: #1fa971;
+}
+
+pre {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+ul {
+  margin: 0;
+  padding-left: 18px;
+}

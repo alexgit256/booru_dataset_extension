@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "Danbooru Saver",
+  "version": "0.1.0",
+  "description": "Save Danbooru images and matching tag files.",
+  "permissions": ["activeTab", "downloads", "scripting", "storage", "offscreen"],
+  "host_permissions": [
+    "https://danbooru.donmai.us/*",
+    "https://cdn.donmai.us/*"
+  ],
+    "action": {
+    "default_popup": "src/popup.html"
+  },
+  "background": {
+    "service_worker": "src/background.js",
+    "type": "module"
+  }
+}
