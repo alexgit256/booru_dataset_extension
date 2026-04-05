@@ -83,6 +83,17 @@ async downloadTextFile(directory, filename, content) {
   }
 }
 
+async downloadDataUrlFile(directory, filename, dataUrl) {
+  const dir = this.sanitizeDirectoryName(directory);
+
+  return await this.downloadsApi.download({
+    url: dataUrl,
+    filename: `${dir}/${filename}`,
+    conflictAction: "uniquify",
+    saveAs: false
+  });
+}
+
 async downloadImageFile(directory, filename, imageUrl) {
   const dir = this.sanitizeDirectoryName(directory);
 

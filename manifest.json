@@ -3,7 +3,14 @@
   "name": "Danbooru Saver",
   "version": "0.1.0",
   "description": "Save Danbooru images and matching tag files.",
-  "permissions": ["activeTab", "downloads", "scripting", "storage", "offscreen"],
+  "permissions": [
+    "activeTab", 
+    "downloads", 
+    "scripting", 
+    "storage", 
+    "offscreen", 
+    "unlimitedStorage"
+  ],
   "host_permissions": [
     "https://danbooru.donmai.us/*",
     "https://cdn.donmai.us/*",
@@ -13,7 +20,14 @@
     "https://gelbooru.com/*",
     "https://*.gelbooru.com/*"
   ],
-    "action": {
+  "content_scripts": [
+    {
+      "matches": ["https://rule34.us/index.php?r=posts/view*"],
+      "js": ["src/rule34usWarmCache.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
     "default_popup": "src/popup.html"
   },
   "background": {

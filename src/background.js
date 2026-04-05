@@ -3,6 +3,17 @@ import { TagFormatter } from "./formatter.js";
 import { FileManager } from "./fileManager.js";
 import { formatTagsFileContent, formatDebugTagsFileContent } from "./formatter.js";
 
+const RULE34US_CACHE_PREFIX = "rule34usImageCache:";
+const RULE34US_PAGE_CACHE_PREFIX = "rule34usPageCache:";
+
+function getRule34UsCacheKey(postId) {
+  return `${RULE34US_CACHE_PREFIX}${postId}`;
+}
+
+function getRule34UsPageCacheKey(pageUrl) {
+  return `${RULE34US_PAGE_CACHE_PREFIX}${pageUrl}`;
+}
+
 const formatter = new TagFormatter();
 const fileManager = new FileManager();
 let captureInProgress = false;
@@ -37,20 +48,15 @@ async function handleMessage(message) {
     case MESSAGE_TYPES.SAVE_SETTINGS:
       return await saveSettingsResponse(message.payload);
 
+    case MESSAGE_TYPES.CACHE_RULE34US_IMAGE:
+      return await cacheRule34UsImageResponse(message.payload);
+
     case MESSAGE_TYPES.CAPTURE_CURRENT_POST:
       if (captureInProgress) {
         return {
           ok: false,
           error: "Capture already in progress."
         };
-      }
-
-      captureInProgress = true;
-
-      try {
-        return await captureCurrentPostResponse();
-      } finally {
-        captureInProgress = false;
       }
 
       captureInProgress = true;
@@ -69,6 +75,30 @@ async function handleMessage(message) {
   }
 }
 
+async function cacheRule34UsImageResponse(payload) {
+  const postId = String(payload?.postId || "").trim();
+  const pageUrl = String(payload?.pageUrl || "").trim();
+  const imageUrl = String(payload?.imageUrl || "").trim();
+  const dataUrl = String(payload?.dataUrl || "").trim();
+
+  if (!postId || !pageUrl || !imageUrl || !dataUrl) {
+    return { ok: false, error: "Incomplete rule34.us cache payload." };
+  }
+
+  await chrome.storage.local.set({
+    [getRule34UsCacheKey(postId)]: {
+      postId,
+      pageUrl,
+      imageUrl,
+      dataUrl,
+      cachedAt: Date.now()
+    },
+    [getRule34UsPageCacheKey(pageUrl)]: postId
+  });
+
+  return { ok: true };
+}
+
 async function getSettingsResponse() {
   const settings = await readSettings();
   return { ok: true, settings };
@@ -80,9 +110,8 @@ async function saveSettingsResponse(partial) {
     ...current,
     ...normalizeSettings(partial)
   };
-  await chrome.storage.local.set({ [STORAGE_KEYS.settings]: next });
 
-  await syncNextIndexFloor(settings.workingDirectory, index);
+  await chrome.storage.local.set({ [STORAGE_KEYS.settings]: next });
   return { ok: true, settings: next };
 }
 
@@ -183,7 +212,6 @@ async function captureCurrentPostResponse() {
             undefined;
 
           const pageImage = document.querySelector("#image");
-
           const pageImageUrl =
             pageImage?.currentSrc ||
             pageImage?.getAttribute("src") ||
@@ -193,8 +221,6 @@ async function captureCurrentPostResponse() {
             (a) => a.textContent?.trim().toLowerCase() === "original image"
           );
 
-          // Prefer the rendered page image on Gelbooru because the original link
-          // often returns HTML / anti-hotlink content when fetched by the extension.
           const imageUrl = pageImageUrl || originalImageLink?.href || null;
 
           if (!imageUrl) {
@@ -252,11 +278,18 @@ async function captureCurrentPostResponse() {
             extractStatsValueUs(document, "Id") ||
             undefined;
 
+          const pageImage = document.querySelector("#image");
+          const pageImageUrl =
+            pageImage?.currentSrc ||
+            pageImage?.getAttribute("src") ||
+            null;
+
           const originalLink = findOriginalLinkUs(document);
-          const imageUrl = originalLink?.href || null;
+
+          const imageUrl = pageImageUrl || originalLink?.href || null;
 
           if (!imageUrl) {
-            throw new Error("Rule34.us parser: original image URL not found.");
+            throw new Error("Rule34.us parser: image URL not found.");
           }
 
           const tags = [
@@ -268,10 +301,12 @@ async function captureCurrentPostResponse() {
 
           const rawTagString = tags.join(" ");
 
+          let resolvedImageUrl = imageUrl;
           let imageExtension;
           try {
-            const pathname = new URL(imageUrl, url.href).pathname;
-            imageExtension = pathname.split(".").pop()?.toLowerCase() || undefined;
+            const resolved = new URL(imageUrl, url.href);
+            resolvedImageUrl = resolved.href;
+            imageExtension = resolved.pathname.split(".").pop()?.toLowerCase() || undefined;
           } catch {
             imageExtension = undefined;
           }
@@ -279,7 +314,7 @@ async function captureCurrentPostResponse() {
           return {
             sourceSite: "rule34.us",
             postUrl: url.href,
-            imageUrl,
+            imageUrl: resolvedImageUrl,
             imageExtension,
             tags,
             rawTagString,
@@ -395,10 +430,12 @@ async function captureCurrentPostResponse() {
       }
 
       function findOriginalLinkUs(document) {
-        return Array.from(document.querySelectorAll("a")).find((a) => {
-          const text = a.textContent?.trim().toLowerCase();
-          return text === "original";
-        }) || null;
+        return (
+          Array.from(document.querySelectorAll("a")).find((a) => {
+            const text = a.textContent?.trim().toLowerCase();
+            return text === "original";
+          }) || null
+        );
       }
 
       function extractStatsValueUs(document, label) {
@@ -517,8 +554,18 @@ async function captureCurrentPostResponse() {
   const settings = await readSettings();
   const index = await reserveNextIndex(settings.workingDirectory);
 
+  let cachedRule34UsImage = null;
+
+  if (pageResult.sourceSite === "rule34.us" && pageResult.postId) {
+    const cacheStore = await chrome.storage.local.get(getRule34UsCacheKey(pageResult.postId));
+    cachedRule34UsImage = cacheStore[getRule34UsCacheKey(pageResult.postId)] || null;
+  }
+
   const imageExtension =
-    pageResult.imageExtension || guessExtensionFromUrl(pageResult.imageUrl) || "jpg";
+    pageResult.imageExtension ||
+    guessExtensionFromUrl(pageResult.imageUrl) ||
+    guessExtensionFromDataUrl(cachedRule34UsImage?.dataUrl) ||
+    "jpg";
 
   const imageFilename = fileManager.makeFilename(
     index,
@@ -526,6 +573,7 @@ async function captureCurrentPostResponse() {
     imageExtension,
     settings.imagePrefix
   );
+
   const textFilename = fileManager.makeFilename(
     index,
     settings.digits,
@@ -534,31 +582,31 @@ async function captureCurrentPostResponse() {
   );
 
   const formatted = formatter.format(pageResult.tags ?? pageResult.rawTagString ?? []);
-
-  const metadataBanner = [
-    `# source_site: ${pageResult.sourceSite ?? "unknown"}`,
-    `# post_url: ${pageResult.postUrl ?? pageResult.pageUrl ?? ""}`,
-    `# image_url: ${pageResult.imageUrl ?? ""}`,
-    pageResult.rating ? `# rating: ${pageResult.rating}` : null,
-    pageResult.postId ? `# post_id: ${pageResult.postId}` : null,
-    pageResult.md5 ? `# md5: ${pageResult.md5}` : null,
-    ""
-  ]
-    .filter(Boolean)
-    .join("\n");
-
-  // const textContent = `${metadataBanner}${formatted.output}\n`;
   const textContent = formatTagsFileContent(pageResult, formatter);
 
   let imageDownloadId;
   let textDownloadId;
 
   try {
-    imageDownloadId = await fileManager.downloadImageFile(
-      settings.workingDirectory,
-      imageFilename,
-      pageResult.imageUrl
-    );
+    if (pageResult.sourceSite === "rule34.us") {
+      if (!cachedRule34UsImage?.dataUrl) {
+        throw new Error(
+          "Rule34.us warm cache missing. Reload the post page, wait for the image to fully appear, then capture again."
+        );
+      }
+
+      imageDownloadId = await fileManager.downloadDataUrlFile(
+        settings.workingDirectory,
+        imageFilename,
+        cachedRule34UsImage.dataUrl
+      );
+    } else {
+      imageDownloadId = await fileManager.downloadImageFile(
+        settings.workingDirectory,
+        imageFilename,
+        pageResult.imageUrl
+      );
+    }
   } catch (error) {
     throw new Error(
       `Image save failed: ${error instanceof Error ? error.message : String(error)}`
@@ -573,8 +621,21 @@ async function captureCurrentPostResponse() {
     );
   } catch (error) {
     throw new Error(
-      `Text save failed: ${error instanceof Error ? error.message : String(error)}`
+      `Tag save failed: ${error instanceof Error ? error.message : String(error)}`
     );
+  }
+
+  if (pageResult.sourceSite === "rule34.us" && pageResult.postId) {
+    const cacheStore = await chrome.storage.local.get(getRule34UsCacheKey(pageResult.postId));
+    cachedRule34UsImage = cacheStore[getRule34UsCacheKey(pageResult.postId)] || null;
+
+    console.log("rule34.us cache", {
+      postId: pageResult.postId,
+      hasCache: !!cachedRule34UsImage,
+      hasDataUrl: !!cachedRule34UsImage?.dataUrl,
+      dataUrlPrefix: cachedRule34UsImage?.dataUrl?.slice(0, 40) || null,
+      imageUrl: pageResult.imageUrl
+    });
   }
 
   return {
