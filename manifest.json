@@ -6,7 +6,9 @@
   "permissions": ["activeTab", "downloads", "scripting", "storage", "offscreen"],
   "host_permissions": [
     "https://danbooru.donmai.us/*",
-    "https://cdn.donmai.us/*"
+    "https://cdn.donmai.us/*",
+    "https://rule34.xxx/*",
+    "https://wimg.rule34.xxx/*"
   ],
     "action": {
     "default_popup": "src/popup.html"

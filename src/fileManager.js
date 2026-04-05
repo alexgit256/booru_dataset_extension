@@ -83,26 +83,36 @@ async downloadTextFile(directory, filename, content) {
   }
 }
 
-  async downloadImageFile(directory, filename, sourceUrl) {
+async downloadImageFile(directory, filename, imageUrl) {
     const dir = this.sanitizeDirectoryName(directory);
 
-    const response = await fetch(sourceUrl, {
-      credentials: "include"
-    });
+    try {
+      const response = await fetch(imageUrl, {
+        credentials: "include"
+      });
 
-    if (!response.ok) {
-      throw new Error(`Image fetch failed: ${response.status} ${response.statusText}`);
+      if (!response.ok) {
+        throw new Error(`Image fetch failed: ${response.status} ${response.statusText}`);
+      }
+
+      const blob = await response.blob();
+      const dataUrl = await this.blobToDataUrl(blob);
+
+      return await this.downloadsApi.download({
+        url: dataUrl,
+        filename: `${dir}/${filename}`,
+        conflictAction: "uniquify",
+        saveAs: false
+      });
+    } catch (_fetchError) {
+      // Fallback for hosts that dislike extension fetches / hotlink fetches.
+      return await this.downloadsApi.download({
+        url: imageUrl,
+        filename: `${dir}/${filename}`,
+        conflictAction: "uniquify",
+        saveAs: false
+      });
     }
-
-    const blob = await response.blob();
-    const dataUrl = await this.blobToDataUrl(blob);
-
-    return await this.downloadsApi.download({
-      url: dataUrl,
-      filename: `${dir}/${filename}`,
-      conflictAction: "uniquify",
-      saveAs: false
-    });
   }
 
   async blobToDataUrl(blob) {
