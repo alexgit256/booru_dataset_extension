@@ -84,36 +84,48 @@ async downloadTextFile(directory, filename, content) {
 }
 
 async downloadImageFile(directory, filename, imageUrl) {
-    const dir = this.sanitizeDirectoryName(directory);
+  const dir = this.sanitizeDirectoryName(directory);
 
-    try {
-      const response = await fetch(imageUrl, {
-        credentials: "include"
-      });
+  try {
+    const response = await fetch(imageUrl, {
+      credentials: "include"
+    });
 
-      if (!response.ok) {
-        throw new Error(`Image fetch failed: ${response.status} ${response.statusText}`);
-      }
-
-      const blob = await response.blob();
-      const dataUrl = await this.blobToDataUrl(blob);
-
-      return await this.downloadsApi.download({
-        url: dataUrl,
-        filename: `${dir}/${filename}`,
-        conflictAction: "uniquify",
-        saveAs: false
-      });
-    } catch (_fetchError) {
-      // Fallback for hosts that dislike extension fetches / hotlink fetches.
-      return await this.downloadsApi.download({
-        url: imageUrl,
-        filename: `${dir}/${filename}`,
-        conflictAction: "uniquify",
-        saveAs: false
-      });
+    if (!response.ok) {
+      throw new Error(`Image fetch failed: ${response.status} ${response.statusText}`);
     }
+
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    const blob = await response.blob();
+    const blobType = (blob.type || "").toLowerCase();
+
+    const looksLikeImage =
+      contentType.startsWith("image/") || blobType.startsWith("image/");
+
+    if (!looksLikeImage) {
+      throw new Error(
+        `Fetched non-image content instead: content-type="${contentType}", blob.type="${blobType}"`
+      );
+    }
+
+    const dataUrl = await this.blobToDataUrl(blob);
+
+    return await this.downloadsApi.download({
+      url: dataUrl,
+      filename: `${dir}/${filename}`,
+      conflictAction: "uniquify",
+      saveAs: false
+    });
+  } catch (_fetchError) {
+    // Fallback for hosts that dislike extension fetches / return HTML interstitials.
+    return await this.downloadsApi.download({
+      url: imageUrl,
+      filename: `${dir}/${filename}`,
+      conflictAction: "uniquify",
+      saveAs: false
+    });
   }
+}
 
   async blobToDataUrl(blob) {
   const buffer = await blob.arrayBuffer();

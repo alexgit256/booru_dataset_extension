@@ -182,13 +182,23 @@ async function captureCurrentPostResponse() {
             extractStatsValue(document, "Id") ||
             undefined;
 
-          const originalImageLink = Array.from(document.querySelectorAll("a")).find((a) =>
-            a.textContent?.trim().toLowerCase() === "original image"
+          const pageImage = document.querySelector("#image");
+
+          const pageImageUrl =
+            pageImage?.currentSrc ||
+            pageImage?.getAttribute("src") ||
+            null;
+
+          const originalImageLink = Array.from(document.querySelectorAll("a")).find(
+            (a) => a.textContent?.trim().toLowerCase() === "original image"
           );
 
-          const imageUrl = originalImageLink?.href || null;
+          // Prefer the rendered page image on Gelbooru because the original link
+          // often returns HTML / anti-hotlink content when fetched by the extension.
+          const imageUrl = pageImageUrl || originalImageLink?.href || null;
+
           if (!imageUrl) {
-            throw new Error("Rule34.xxx parser: original image URL not found.");
+            throw new Error("Gelbooru parser: image URL not found.");
           }
 
           const ratingText = extractStatsValue(document, "Rating") || undefined;
@@ -201,9 +211,13 @@ async function captureCurrentPostResponse() {
 
           const rawTagString = tags.join(" ");
 
+          let resolvedImageUrl = imageUrl;
           let imageExtension;
+
           try {
-            const pathname = new URL(imageUrl, url.href).pathname;
+            const resolved = new URL(imageUrl, url.href);
+            resolvedImageUrl = resolved.href;
+            const pathname = resolved.pathname;
             imageExtension = pathname.split(".").pop()?.toLowerCase() || undefined;
           } catch {
             imageExtension = undefined;
@@ -212,7 +226,7 @@ async function captureCurrentPostResponse() {
           return {
             sourceSite: "rule34.xxx",
             postUrl: url.href,
-            imageUrl,
+            imageUrl: resolvedImageUrl,
             imageExtension,
             tags,
             rawTagString,
@@ -271,6 +285,112 @@ async function captureCurrentPostResponse() {
             rawTagString,
             postId
           };
+        }
+      }
+
+      class GelbooruParser extends Parser {
+        canHandle(url) {
+          return (
+            url.hostname === "gelbooru.com" &&
+            url.pathname.endsWith("/index.php") &&
+            url.searchParams.get("page") === "post" &&
+            url.searchParams.get("s") === "view" &&
+            !!url.searchParams.get("id")
+          );
+        }
+
+        parse(document, url) {
+          const postId =
+            url.searchParams.get("id") ||
+            extractStatsValueGelbooru(document, "Id") ||
+            document.querySelector("section.image-container")?.dataset?.id ||
+            undefined;
+
+          const originalImageLink = Array.from(document.querySelectorAll("a")).find(
+            (a) => a.textContent?.trim().toLowerCase() === "original image"
+          );
+
+          const imageUrl = originalImageLink?.href || null;
+          if (!imageUrl) {
+            throw new Error("Gelbooru parser: original image URL not found.");
+          }
+
+          const ratingText =
+            extractStatsValueGelbooru(document, "Rating") ||
+            document.querySelector('meta[name="rating"]')?.content ||
+            undefined;
+
+          const rating = normalizeGelbooruRating(ratingText);
+
+          const tags = [
+            ...extractTagGroupGelbooru(document, "artist"),
+            ...extractTagGroupGelbooru(document, "character"),
+            ...extractTagGroupGelbooru(document, "general"),
+            ...extractTagGroupGelbooru(document, "metadata")
+          ];
+
+          const rawTagString = tags.join(" ");
+
+          const md5 =
+            document.querySelector("section.image-container")?.dataset?.md5 ||
+            undefined;
+
+          let imageExtension;
+          try {
+            const pathname = new URL(imageUrl, url.href).pathname;
+            imageExtension = pathname.split(".").pop()?.toLowerCase() || undefined;
+          } catch {
+            imageExtension = undefined;
+          }
+
+          return {
+            sourceSite: "gelbooru",
+            postUrl: url.href,
+            imageUrl,
+            imageExtension,
+            tags,
+            rawTagString,
+            rating,
+            md5,
+            postId
+          };
+        }
+      }
+
+      function extractStatsValueGelbooru(document, label) {
+        const items = Array.from(document.querySelectorAll("li"));
+        const match = items.find((li) =>
+          li.textContent?.trim().toLowerCase().startsWith(`${label.toLowerCase()}:`)
+        );
+
+        if (!match) {
+          return null;
+        }
+
+        const text = match.textContent.trim();
+        return text.slice(label.length + 1).trim() || null;
+      }
+
+      function extractTagGroupGelbooru(document, type) {
+        return Array.from(document.querySelectorAll(`li.tag-type-${type} > a`))
+          .map((a) => a.textContent?.trim())
+          .filter(Boolean);
+      }
+
+      function normalizeGelbooruRating(ratingText) {
+        if (!ratingText) return undefined;
+
+        switch (ratingText.trim().toLowerCase()) {
+          case "general":
+            return "g";
+          case "sensitive":
+            return "s";
+          case "questionable":
+            return "q";
+          case "explicit":
+            return "e";
+          default:
+            return ratingText.trim().toLowerCase();
         }
       }
 
@@ -356,7 +476,8 @@ async function captureCurrentPostResponse() {
       const parserRegistry = [
         new DanbooruParser(),
         new Rule34XxxParser(),
-        new Rule34UsParser()
+        new Rule34UsParser(),
+        new GelbooruParser()
       ];
       const parser = parserRegistry.find((p) => p.canHandle(url)) ?? null;
 
