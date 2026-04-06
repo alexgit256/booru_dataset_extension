@@ -941,14 +941,13 @@ function normalizeSettings(partial = {}) {
 async function reserveNextIndex(directory) {
   const dir = fileManager.sanitizeDirectoryName(directory);
   const store = await chrome.storage.local.get(STORAGE_KEYS.nextIndexByDirectory);
+
   const map = { ...(store[STORAGE_KEYS.nextIndexByDirectory] || {}) };
 
-  let next = map[dir];
-
-  if (!Number.isInteger(next)) {
-    const scanned = await fileManager.findNextFreeIndex(dir);
-    next = scanned;
-  }
+  // Always rescan the actual folder contents.
+  // This makes the index reset correctly after files were deleted,
+  // and also notices files added manually.
+  const next = await fileManager.findNextFreeIndex(dir);
 
   map[dir] = next + 1;
 

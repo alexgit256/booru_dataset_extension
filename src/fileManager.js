@@ -34,11 +34,32 @@ export class FileManager {
 
   async searchExistingFiles(directory) {
     const dir = this.sanitizeDirectoryName(directory);
-    const items = await this.downloadsApi.search({
-      filenameRegex: `(^|[\\/])${escapeRegex(dir)}[\\/][^\\/]+\\.[A-Za-z0-9]+$`,
+
+    const filenameRegex =
+      `(^|[\\\\/])${escapeRegex(dir)}[\\\\/][^\\\\/]+\\.[A-Za-z0-9]+$`;
+
+    const baseQuery = {
+      filenameRegex,
+      state: "complete",
       limit: 10000
+    };
+
+    // First call triggers Chrome's async exists refresh.
+    await this.downloadsApi.search(baseQuery);
+
+    // Give Chrome a moment to update item.exists.
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    // Then ask only for files that still exist.
+    const items = await this.downloadsApi.search({
+      ...baseQuery,
+      exists: true
     });
-    return items;
+
+    // Defensive extra filter in case the exists refresh is still settling.
+    return items.filter(
+      (item) => item?.state === "complete" && item?.exists !== false
+    );
   }
 
   extractUsedIndices(items) {
