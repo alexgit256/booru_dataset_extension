@@ -4,12 +4,12 @@
   "version": "0.1.0",
   "description": "Save Danbooru images and matching tag files.",
   "permissions": [
-    "activeTab", 
-    "downloads", 
-    "scripting", 
-    "storage", 
-    "offscreen", 
-    "unlimitedStorage"
+    "activeTab",
+    "downloads",
+    "scripting",
+    "storage",
+    "offscreen",
+    "debugger"
   ],
   "host_permissions": [
     "https://danbooru.donmai.us/*",

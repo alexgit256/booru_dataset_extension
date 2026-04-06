@@ -3,8 +3,45 @@ import { TagFormatter } from "./formatter.js";
 import { FileManager } from "./fileManager.js";
 import { formatTagsFileContent, formatDebugTagsFileContent } from "./formatter.js";
 
-const RULE34US_CACHE_PREFIX = "rule34usImageCache:";
-const RULE34US_PAGE_CACHE_PREFIX = "rule34usPageCache:";
+const DEBUGGER_VERSION = "1.3";
+
+function isLikelyImageMime(mime) {
+  return typeof mime === "string" && mime.toLowerCase().startsWith("image/");
+}
+
+function mimeToExtension(mime) {
+  switch ((mime || "").toLowerCase()) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/png":
+      return "png";
+    case "image/gif":
+      return "gif";
+    case "image/webp":
+      return "webp";
+    case "image/avif":
+      return "avif";
+    case "image/bmp":
+      return "bmp";
+    default:
+      return null;
+  }
+}
+
+function debuggerAttach(debuggee) {
+  return chrome.debugger.attach(debuggee, DEBUGGER_VERSION);
+}
+
+function debuggerDetach(debuggee) {
+  return chrome.debugger.detach(debuggee).catch(() => {});
+}
+
+function debuggerSend(debuggee, method, commandParams = {}) {
+  return chrome.debugger.sendCommand(debuggee, method, commandParams);
+}
+
+// const RULE34US_CACHE_PREFIX = "rule34usImageCache:";
+// const RULE34US_PAGE_CACHE_PREFIX = "rule34usPageCache:";
 
 function getRule34UsCacheKey(postId) {
   return `${RULE34US_CACHE_PREFIX}${postId}`;
@@ -12,6 +49,138 @@ function getRule34UsCacheKey(postId) {
 
 function getRule34UsPageCacheKey(pageUrl) {
   return `${RULE34US_PAGE_CACHE_PREFIX}${pageUrl}`;
+}
+
+async function captureImageBodyViaDebugger(tabId, expectedImageUrl, timeoutMs = 15000) {
+  const debuggee = { tabId };
+
+  await debuggerAttach(debuggee);
+
+  let settled = false;
+
+  return await new Promise(async (resolve, reject) => {
+    const cleanup = async () => {
+      chrome.debugger.onEvent.removeListener(onEvent);
+      chrome.debugger.onDetach.removeListener(onDetach);
+      clearTimeout(timer);
+      await debuggerDetach(debuggee);
+    };
+
+    const finishResolve = async (value) => {
+      if (settled) return;
+      settled = true;
+      await cleanup();
+      resolve(value);
+    };
+
+    const finishReject = async (error) => {
+      if (settled) return;
+      settled = true;
+      await cleanup();
+      reject(error instanceof Error ? error : new Error(String(error)));
+    };
+
+    const absExpectedUrl = (() => {
+      try {
+        return new URL(expectedImageUrl).href;
+      } catch {
+        return expectedImageUrl || null;
+      }
+    })();
+
+    const candidates = new Map();
+
+    const onDetach = async (_source, reason) => {
+      await finishReject(new Error(`Debugger detached: ${reason}`));
+    };
+
+    const onEvent = async (source, method, params) => {
+      if (source.tabId !== tabId) return;
+
+      try {
+        if (method === "Network.responseReceived") {
+          const url = params?.response?.url || "";
+          const mimeType = params?.response?.mimeType || "";
+          const requestId = params?.requestId;
+
+          if (!requestId) return;
+          if (!isLikelyImageMime(mimeType)) return;
+
+          const sameUrl = absExpectedUrl && url === absExpectedUrl;
+          const softMatch =
+            absExpectedUrl &&
+            (url.includes(absExpectedUrl) || absExpectedUrl.includes(url));
+
+          if (sameUrl || softMatch) {
+            candidates.set(requestId, {
+              url,
+              mimeType,
+              status: params?.response?.status,
+              fromDiskCache: !!params?.response?.fromDiskCache,
+              fromServiceWorker: !!params?.response?.fromServiceWorker
+            });
+          }
+        }
+
+        if (method === "Network.loadingFinished") {
+          const requestId = params?.requestId;
+          if (!requestId || !candidates.has(requestId)) return;
+
+          const meta = candidates.get(requestId);
+
+          const bodyResult = await debuggerSend(
+            debuggee,
+            "Network.getResponseBody",
+            { requestId }
+          );
+
+          const mimeType = meta.mimeType || "application/octet-stream";
+          const body = bodyResult?.body || "";
+          const base64Encoded = !!bodyResult?.base64Encoded;
+
+          const dataUrl = base64Encoded
+            ? `data:${mimeType};base64,${body}`
+            : `data:${mimeType};base64,${btoa(unescape(encodeURIComponent(body)))}`;
+
+          await finishResolve({
+            ok: true,
+            url: meta.url,
+            mimeType,
+            status: meta.status,
+            dataUrl
+          });
+        }
+
+        if (method === "Network.loadingFailed") {
+          const requestId = params?.requestId;
+          if (!requestId || !candidates.has(requestId)) return;
+
+          await finishReject(
+            new Error(`Matched image request failed: ${params?.errorText || "unknown error"}`)
+          );
+        }
+      } catch (error) {
+        await finishReject(error);
+      }
+    };
+
+    chrome.debugger.onEvent.addListener(onEvent);
+    chrome.debugger.onDetach.addListener(onDetach);
+
+    const timer = setTimeout(() => {
+      void finishReject(
+        new Error("Timed out while waiting for the rule34.us image response body.")
+      );
+    }, timeoutMs);
+
+    try {
+      await debuggerSend(debuggee, "Network.enable");
+      await debuggerSend(debuggee, "Network.setCacheDisabled", { cacheDisabled: true });
+      await debuggerSend(debuggee, "Page.reload", { ignoreCache: true });
+    } catch (error) {
+      await finishReject(error);
+    }
+  });
 }
 
 const formatter = new TagFormatter();
@@ -551,21 +720,30 @@ async function captureCurrentPostResponse() {
     };
   }
 
+  let capturedRule34UsDataUrl = null;
+  let capturedRule34UsImageUrl = null;
+  let capturedRule34UsMimeType = null;
+
+  if (pageResult.sourceSite === "rule34.us") {
+    const captureResult = await captureImageBodyViaDebugger(tab.id, pageResult.imageUrl);
+
+    capturedRule34UsDataUrl = captureResult.dataUrl;
+    capturedRule34UsImageUrl = captureResult.url || pageResult.imageUrl || null;
+    capturedRule34UsMimeType = captureResult.mimeType || null;
+  }
+
   const settings = await readSettings();
   const index = await reserveNextIndex(settings.workingDirectory);
 
-  let cachedRule34UsImage = null;
-
-  if (pageResult.sourceSite === "rule34.us" && pageResult.postId) {
-    const cacheStore = await chrome.storage.local.get(getRule34UsCacheKey(pageResult.postId));
-    cachedRule34UsImage = cacheStore[getRule34UsCacheKey(pageResult.postId)] || null;
-  }
-
   const imageExtension =
-    pageResult.imageExtension ||
-    guessExtensionFromUrl(pageResult.imageUrl) ||
-    guessExtensionFromDataUrl(cachedRule34UsImage?.dataUrl) ||
-    "jpg";
+  (pageResult.sourceSite === "rule34.us"
+    ? mimeToExtension(capturedRule34UsMimeType) ||
+      guessExtensionFromDataUrl(capturedRule34UsDataUrl) ||
+      guessExtensionFromUrl(capturedRule34UsImageUrl)
+    : null) ||
+  pageResult.imageExtension ||
+  guessExtensionFromUrl(pageResult.imageUrl) ||
+  "jpg";
 
   const imageFilename = fileManager.makeFilename(
     index,
@@ -589,16 +767,14 @@ async function captureCurrentPostResponse() {
 
   try {
     if (pageResult.sourceSite === "rule34.us") {
-      if (!cachedRule34UsImage?.dataUrl) {
-        throw new Error(
-          "Rule34.us warm cache missing. Reload the post page, wait for the image to fully appear, then capture again."
-        );
+      if (!capturedRule34UsDataUrl) {
+        throw new Error("Rule34.us debugger capture returned no data.");
       }
 
       imageDownloadId = await fileManager.downloadDataUrlFile(
         settings.workingDirectory,
         imageFilename,
-        cachedRule34UsImage.dataUrl
+        capturedRule34UsDataUrl
       );
     } else {
       imageDownloadId = await fileManager.downloadImageFile(
@@ -625,18 +801,6 @@ async function captureCurrentPostResponse() {
     );
   }
 
-  if (pageResult.sourceSite === "rule34.us" && pageResult.postId) {
-    const cacheStore = await chrome.storage.local.get(getRule34UsCacheKey(pageResult.postId));
-    cachedRule34UsImage = cacheStore[getRule34UsCacheKey(pageResult.postId)] || null;
-
-    console.log("rule34.us cache", {
-      postId: pageResult.postId,
-      hasCache: !!cachedRule34UsImage,
-      hasDataUrl: !!cachedRule34UsImage?.dataUrl,
-      dataUrlPrefix: cachedRule34UsImage?.dataUrl?.slice(0, 40) || null,
-      imageUrl: pageResult.imageUrl
-    });
-  }
 
   return {
     ok: true,
@@ -708,6 +872,30 @@ async function syncNextIndexFloor(directory, usedIndex) {
     await chrome.storage.local.set({
       [STORAGE_KEYS.nextIndexByDirectory]: map
     });
+  }
+}
+
+function guessExtensionFromDataUrl(dataUrl) {
+  if (!dataUrl || typeof dataUrl !== "string") {
+    return null;
+  }
+
+  const match = dataUrl.match(/^data:([^;,]+)[;,]/i);
+  const mime = match?.[1]?.toLowerCase();
+
+  switch (mime) {
+    case "image/jpeg":
+      return "jpg";
+    case "image/png":
+      return "png";
+    case "image/gif":
+      return "gif";
+    case "image/webp":
+      return "webp";
+    case "image/avif":
+      return "avif";
+    default:
+      return null;
   }
 }
 
