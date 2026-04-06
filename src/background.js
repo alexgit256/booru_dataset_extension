@@ -80,13 +80,62 @@ async function captureImageBodyViaDebugger(tabId, expectedImageUrl, timeoutMs = 
       reject(error instanceof Error ? error : new Error(String(error)));
     };
 
-    const absExpectedUrl = (() => {
+    const normalizeUrl = (value) => {
       try {
-        return new URL(expectedImageUrl).href;
+        return new URL(value).href;
       } catch {
-        return expectedImageUrl || null;
+        return value || "";
       }
-    })();
+    };
+
+    const expected = normalizeUrl(expectedImageUrl);
+
+    const tokenize = (url) => {
+      try {
+        const u = new URL(url);
+        return new Set(
+          `${u.hostname} ${u.pathname}`
+            .toLowerCase()
+            .split(/[^a-z0-9]+/)
+            .filter(Boolean)
+        );
+      } catch {
+        return new Set(String(url).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean));
+      }
+    };
+
+    const expectedTokens = tokenize(expected);
+
+    const scoreCandidate = (response) => {
+      const url = normalizeUrl(response?.url || "");
+      const mimeType = (response?.mimeType || "").toLowerCase();
+      const status = Number(response?.status || 0);
+
+      let score = 0;
+
+      if (mimeType.startsWith("image/")) score += 100;
+      if (status >= 200 && status < 300) score += 20;
+
+      if (expected) {
+        if (url === expected) score += 300;
+        if (url.includes(expected) || expected.includes(url)) score += 120;
+
+        const urlTokens = tokenize(url);
+        let overlap = 0;
+        for (const token of expectedTokens) {
+          if (urlTokens.has(token)) overlap += 1;
+        }
+        score += overlap * 15;
+      }
+
+      // Prefer likely full/sample images over tiny icons.
+      const lower = url.toLowerCase();
+      if (/\b(sample|images|img)\b/.test(lower)) score += 25;
+      if (/\b(jpe?g|png|webp|gif|avif)\b/.test(lower)) score += 10;
+      if (/\b(avatar|logo|icon|banner|sprite)\b/.test(lower)) score -= 80;
+
+      return score;
+    };
 
     const candidates = new Map();
 
@@ -99,42 +148,73 @@ async function captureImageBodyViaDebugger(tabId, expectedImageUrl, timeoutMs = 
 
       try {
         if (method === "Network.responseReceived") {
-          const url = params?.response?.url || "";
-          const mimeType = params?.response?.mimeType || "";
           const requestId = params?.requestId;
+          const response = params?.response;
 
-          if (!requestId) return;
-          if (!isLikelyImageMime(mimeType)) return;
+          if (!requestId || !response) return;
+          if (!isLikelyImageMime(response.mimeType)) return;
 
-          const sameUrl = absExpectedUrl && url === absExpectedUrl;
-          const softMatch =
-            absExpectedUrl &&
-            (url.includes(absExpectedUrl) || absExpectedUrl.includes(url));
-
-          if (sameUrl || softMatch) {
-            candidates.set(requestId, {
-              url,
-              mimeType,
-              status: params?.response?.status,
-              fromDiskCache: !!params?.response?.fromDiskCache,
-              fromServiceWorker: !!params?.response?.fromServiceWorker
-            });
-          }
+          candidates.set(requestId, {
+            requestId,
+            url: response.url || "",
+            mimeType: response.mimeType || "",
+            status: response.status,
+            encodedDataLength: 0,
+            score: scoreCandidate(response)
+          });
         }
 
         if (method === "Network.loadingFinished") {
           const requestId = params?.requestId;
-          if (!requestId || !candidates.has(requestId)) return;
+          const candidate = requestId ? candidates.get(requestId) : null;
+          if (!candidate) return;
 
-          const meta = candidates.get(requestId);
+          candidate.encodedDataLength = Number(params?.encodedDataLength || 0);
 
-          const bodyResult = await debuggerSend(
-            debuggee,
-            "Network.getResponseBody",
-            { requestId }
-          );
+          // Prefer substantial image bodies.
+          const finalScore = candidate.score + Math.min(candidate.encodedDataLength / 5000, 200);
+          candidate.finalScore = finalScore;
 
-          const mimeType = meta.mimeType || "application/octet-stream";
+          // Try exact/high-confidence matches immediately.
+          if (finalScore >= 250) {
+            const bodyResult = await debuggerSend(debuggee, "Network.getResponseBody", { requestId });
+            const mimeType = candidate.mimeType || "application/octet-stream";
+            const body = bodyResult?.body || "";
+            const base64Encoded = !!bodyResult?.base64Encoded;
+
+            const dataUrl = base64Encoded
+              ? `data:${mimeType};base64,${body}`
+              : `data:${mimeType};base64,${btoa(unescape(encodeURIComponent(body)))}`;
+
+            await finishResolve({
+              ok: true,
+              url: candidate.url,
+              mimeType,
+              status: candidate.status,
+              dataUrl
+            });
+            return;
+          }
+        }
+
+        if (method === "Page.loadEventFired") {
+          if (!candidates.size) return;
+
+          const ranked = Array.from(candidates.values())
+            .map((c) => ({
+              ...c,
+              finalScore: c.finalScore ?? (c.score + Math.min(c.encodedDataLength / 5000, 200))
+            }))
+            .sort((a, b) => b.finalScore - a.finalScore);
+
+          const best = ranked[0];
+          if (!best) return;
+
+          const bodyResult = await debuggerSend(debuggee, "Network.getResponseBody", {
+            requestId: best.requestId
+          });
+
+          const mimeType = best.mimeType || "application/octet-stream";
           const body = bodyResult?.body || "";
           const base64Encoded = !!bodyResult?.base64Encoded;
 
@@ -144,9 +224,9 @@ async function captureImageBodyViaDebugger(tabId, expectedImageUrl, timeoutMs = 
 
           await finishResolve({
             ok: true,
-            url: meta.url,
+            url: best.url,
             mimeType,
-            status: meta.status,
+            status: best.status,
             dataUrl
           });
         }
@@ -155,9 +235,8 @@ async function captureImageBodyViaDebugger(tabId, expectedImageUrl, timeoutMs = 
           const requestId = params?.requestId;
           if (!requestId || !candidates.has(requestId)) return;
 
-          await finishReject(
-            new Error(`Matched image request failed: ${params?.errorText || "unknown error"}`)
-          );
+          const candidate = candidates.get(requestId);
+          candidate.failed = true;
         }
       } catch (error) {
         await finishReject(error);
@@ -169,12 +248,13 @@ async function captureImageBodyViaDebugger(tabId, expectedImageUrl, timeoutMs = 
 
     const timer = setTimeout(() => {
       void finishReject(
-        new Error("Timed out while waiting for the rule34.us image response body.")
+        new Error("Timed out while waiting for the image response body.")
       );
     }, timeoutMs);
 
     try {
       await debuggerSend(debuggee, "Network.enable");
+      await debuggerSend(debuggee, "Page.enable");
       await debuggerSend(debuggee, "Network.setCacheDisabled", { cacheDisabled: true });
       await debuggerSend(debuggee, "Page.reload", { ignoreCache: true });
     } catch (error) {
@@ -380,7 +460,12 @@ async function captureCurrentPostResponse() {
             extractStatsValue(document, "Id") ||
             undefined;
 
-          const pageImage = document.querySelector("#image");
+          const pageImage =
+            document.querySelector("#image") ||
+            document.querySelector("img#main-image") ||
+            document.querySelector("section.image-container img") ||
+            document.querySelector("img");
+
           const pageImageUrl =
             pageImage?.currentSrc ||
             pageImage?.getAttribute("src") ||
@@ -724,23 +809,33 @@ async function captureCurrentPostResponse() {
   let capturedRule34UsImageUrl = null;
   let capturedRule34UsMimeType = null;
 
-  if (pageResult.sourceSite === "rule34.us") {
+  let capturedSpecialSiteDataUrl = null;
+  let capturedSpecialSiteImageUrl = null;
+  let capturedSpecialSiteMimeType = null;
+
+  if (
+    pageResult.sourceSite === "rule34.us" ||
+    pageResult.sourceSite === "gelbooru"
+  ) {
     const captureResult = await captureImageBodyViaDebugger(tab.id, pageResult.imageUrl);
 
-    capturedRule34UsDataUrl = captureResult.dataUrl;
-    capturedRule34UsImageUrl = captureResult.url || pageResult.imageUrl || null;
-    capturedRule34UsMimeType = captureResult.mimeType || null;
+    capturedSpecialSiteDataUrl = captureResult.dataUrl;
+    capturedSpecialSiteImageUrl = captureResult.url || pageResult.imageUrl || null;
+    capturedSpecialSiteMimeType = captureResult.mimeType || null;
   }
 
   const settings = await readSettings();
   const index = await reserveNextIndex(settings.workingDirectory);
 
   const imageExtension =
-  (pageResult.sourceSite === "rule34.us"
-    ? mimeToExtension(capturedRule34UsMimeType) ||
-      guessExtensionFromDataUrl(capturedRule34UsDataUrl) ||
-      guessExtensionFromUrl(capturedRule34UsImageUrl)
-    : null) ||
+  (
+    pageResult.sourceSite === "rule34.us" ||
+    pageResult.sourceSite === "gelbooru"
+  ? mimeToExtension(capturedSpecialSiteMimeType) ||
+    guessExtensionFromDataUrl(capturedSpecialSiteDataUrl) ||
+    guessExtensionFromUrl(capturedSpecialSiteImageUrl)
+  : null
+  ) ||
   pageResult.imageExtension ||
   guessExtensionFromUrl(pageResult.imageUrl) ||
   "jpg";
@@ -766,15 +861,18 @@ async function captureCurrentPostResponse() {
   let textDownloadId;
 
   try {
-    if (pageResult.sourceSite === "rule34.us") {
-      if (!capturedRule34UsDataUrl) {
-        throw new Error("Rule34.us debugger capture returned no data.");
+    if (
+      pageResult.sourceSite === "rule34.us" ||
+      pageResult.sourceSite === "gelbooru"
+    ) {
+      if (!capturedSpecialSiteDataUrl) {
+        throw new Error(`${pageResult.sourceSite} debugger capture returned no data.`);
       }
 
       imageDownloadId = await fileManager.downloadDataUrlFile(
         settings.workingDirectory,
         imageFilename,
-        capturedRule34UsDataUrl
+        capturedSpecialSiteDataUrl
       );
     } else {
       imageDownloadId = await fileManager.downloadImageFile(
