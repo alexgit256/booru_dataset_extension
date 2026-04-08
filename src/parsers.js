@@ -3,6 +3,7 @@ import { DanbooruParser } from "./danbooru.js";
 import { Rule34XxxParser } from "./rule34xxx.js";
 import { Rule34UsParser } from "./rule34us.js";
 import { GelbooruParser } from "./gelbooru.js";
+import { BooruIoParser } from "./booruio.js";
 
 class UnsupportedParser extends Parser {
   canHandle(_url) {
@@ -19,6 +20,7 @@ const parserRegistry = [
   new Rule34XxxParser(),
   new Rule34UsParser(),
   new GelbooruParser(),
+  new BooruIoParser(),
   new UnsupportedParser()
 ];
 

@@ -18,7 +18,8 @@
     "https://wimg.rule34.xxx/*",
     "https://rule34.us/*",
     "https://gelbooru.com/*",
-    "https://*.gelbooru.com/*"
+    "https://*.gelbooru.com/*",
+    "https://booru.io/*"
   ],
   "content_scripts": [
     {
