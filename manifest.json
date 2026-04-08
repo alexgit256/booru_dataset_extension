@@ -33,5 +33,14 @@
   "background": {
     "service_worker": "src/background.js",
     "type": "module"
+  },
+  "commands": {
+  "save-current-post": {
+    "suggested_key": {
+      "default": "Alt+Shift+J",
+      "mac": "Option+Shift+J"
+    },
+    "description": "Save current post"
   }
+}
 }

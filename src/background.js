@@ -39,6 +39,19 @@ const formatter = new TagFormatter();
 const fileManager = new FileManager();
 let captureInProgress = false;
 
+async function runCaptureCurrentPost() {
+  if (captureInProgress) {
+    return { ok: false, error: "Capture already in progress." };
+  }
+
+  captureInProgress = true;
+  try {
+    return await captureCurrentPostResponse();
+  } finally {
+    captureInProgress = false;
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   const existing = await chrome.storage.local.get(STORAGE_KEYS.settings);
   if (!existing[STORAGE_KEYS.settings]) {
@@ -61,6 +74,17 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return true;
 });
 
+chrome.commands.onCommand.addListener((command) => {
+  if (command !== "save-current-post") return;
+
+  void runCaptureCurrentPost().catch((error) => {
+    console.error(
+      "Hotkey capture failed:",
+      error instanceof Error ? error.message : String(error)
+    );
+  });
+});
+
 async function handleMessage(message) {
   switch (message?.type) {
     case MESSAGE_TYPES.GET_SETTINGS:
@@ -73,27 +97,14 @@ async function handleMessage(message) {
       return await cacheRule34UsImageResponse(message.payload);
 
     case MESSAGE_TYPES.CAPTURE_CURRENT_POST:
-      if (captureInProgress) {
+    return await runCaptureCurrentPost();
+
+      default:
         return {
           ok: false,
-          error: "Capture already in progress."
+          error: `Unknown message type: ${message?.type ?? "<missing>"}`
         };
-      }
-
-      captureInProgress = true;
-
-      try {
-        return await captureCurrentPostResponse();
-      } finally {
-        captureInProgress = false;
-      }
-
-    default:
-      return {
-        ok: false,
-        error: `Unknown message type: ${message?.type ?? "<missing>"}`
-      };
-  }
+    }
 }
 
 async function cacheRule34UsImageResponse(payload) {
