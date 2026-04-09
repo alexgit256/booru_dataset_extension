@@ -36,12 +36,19 @@
     "type": "module"
   },
   "commands": {
-  "save-current-post": {
-    "suggested_key": {
-      "default": "Alt+Shift+J",
-      "mac": "Option+Shift+J"
+    "save-current-post": {
+      "suggested_key": {
+        "default": "Alt+Shift+J",
+        "mac": "Option+Shift+J"
+      },
+      "description": "Save current post"
     },
-    "description": "Save current post"
+    "save-current-tags-only": {
+      "suggested_key": {
+        "default": "Alt+Shift+K",
+        "mac": "Option+Shift+T"
+      },
+      "description": "Save tags only for current post"
+    }
   }
-}
 }

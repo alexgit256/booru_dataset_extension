@@ -52,6 +52,19 @@ async function runCaptureCurrentPost() {
   }
 }
 
+async function runCaptureCurrentTagsOnly() {
+  if (captureInProgress) {
+    return { ok: false, error: "Capture already in progress." };
+  }
+
+  captureInProgress = true;
+  try {
+    return await captureCurrentPostResponse({ saveImage: false, saveTags: true });
+  } finally {
+    captureInProgress = false;
+  }
+}
+
 chrome.runtime.onInstalled.addListener(async () => {
   const existing = await chrome.storage.local.get(STORAGE_KEYS.settings);
   if (!existing[STORAGE_KEYS.settings]) {
@@ -75,14 +88,24 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.commands.onCommand.addListener((command) => {
-  if (command !== "save-current-post") return;
+  if (command === "save-current-post") {
+    void runCaptureCurrentPost().catch((error) => {
+      console.error(
+        "Hotkey capture failed:",
+        error instanceof Error ? error.message : String(error)
+      );
+    });
+    return;
+  }
 
-  void runCaptureCurrentPost().catch((error) => {
-    console.error(
-      "Hotkey capture failed:",
-      error instanceof Error ? error.message : String(error)
-    );
-  });
+  if (command === "save-current-tags-only") {
+    void runCaptureCurrentTagsOnly().catch((error) => {
+      console.error(
+        "Hotkey tag-only capture failed:",
+        error instanceof Error ? error.message : String(error)
+      );
+    });
+  }
 });
 
 async function handleMessage(message) {
@@ -97,14 +120,17 @@ async function handleMessage(message) {
       return await cacheRule34UsImageResponse(message.payload);
 
     case MESSAGE_TYPES.CAPTURE_CURRENT_POST:
-    return await runCaptureCurrentPost();
+      return await runCaptureCurrentPost();
 
-      default:
-        return {
-          ok: false,
-          error: `Unknown message type: ${message?.type ?? "<missing>"}`
-        };
-    }
+    case MESSAGE_TYPES.CAPTURE_CURRENT_TAGS_ONLY:
+      return await runCaptureCurrentTagsOnly();
+
+    default:
+      return {
+        ok: false,
+        error: `Unknown message type: ${message?.type ?? "<missing>"}`
+      };
+  }
 }
 
 async function cacheRule34UsImageResponse(payload) {
@@ -147,7 +173,9 @@ async function saveSettingsResponse(partial) {
   return { ok: true, settings: next };
 }
 
-async function captureCurrentPostResponse() {
+async function captureCurrentPostResponse(options = {}) {
+  const { saveImage = true, saveTags = true } = options;
+
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   if (!tab?.id) {
     throw new Error("No active tab is available.");
@@ -588,33 +616,42 @@ async function captureCurrentPostResponse() {
     };
   }
 
-  const acquisitionStrategy = resolveImageAcquisitionStrategy(pageResult);
-  const acquiredImage = await acquisitionStrategy.acquire({
-    tabId: tab.id,
-    pageResult,
-  });
+  let acquiredImage = null;
+
+  if (saveImage) {
+    const acquisitionStrategy = resolveImageAcquisitionStrategy(pageResult);
+    acquiredImage = await acquisitionStrategy.acquire({
+      tabId: tab.id,
+      pageResult,
+    });
+  }
 
   const settings = await readSettings();
   const index = await reserveNextIndex(settings.workingDirectory);
 
-  const imageExtension =
-  (
-    acquiredImage.mode === "data-url"
-      ? mimeToExtension(acquiredImage.mimeType) ||
-        guessExtensionFromDataUrl(acquiredImage.dataUrl) ||
-        guessExtensionFromUrl(acquiredImage.imageUrl)
-      : guessExtensionFromUrl(acquiredImage.imageUrl)
-  ) ||
-  pageResult.imageExtension ||
-  guessExtensionFromUrl(pageResult.imageUrl) ||
-  "jpg";
+  let imageFilename;
+  let imageExtension;
 
-  const imageFilename = fileManager.makeFilename(
-    index,
-    settings.digits,
-    imageExtension,
-    settings.imagePrefix
-  );
+  if (saveImage) {
+    imageExtension =
+      (
+        acquiredImage.mode === "data-url"
+          ? mimeToExtension(acquiredImage.mimeType) ||
+            guessExtensionFromDataUrl(acquiredImage.dataUrl) ||
+            guessExtensionFromUrl(acquiredImage.imageUrl)
+          : guessExtensionFromUrl(acquiredImage.imageUrl)
+      ) ||
+      pageResult.imageExtension ||
+      guessExtensionFromUrl(pageResult.imageUrl) ||
+      "jpg";
+
+    imageFilename = fileManager.makeFilename(
+      index,
+      settings.digits,
+      imageExtension,
+      settings.imagePrefix
+    );
+  }
 
   const textFilename = fileManager.makeFilename(
     index,
@@ -629,40 +666,44 @@ async function captureCurrentPostResponse() {
   let imageDownloadId;
   let textDownloadId;
 
-  try {
-    if (acquiredImage.mode === "data-url") {
-      if (!acquiredImage.dataUrl) {
-        throw new Error(`${pageResult.sourceSite} acquisition returned no data.`);
-      }
+  if (saveImage) {
+    try {
+      if (acquiredImage.mode === "data-url") {
+        if (!acquiredImage.dataUrl) {
+          throw new Error(`${pageResult.sourceSite} acquisition returned no data.`);
+        }
 
-      imageDownloadId = await fileManager.downloadDataUrlFile(
-        settings.workingDirectory,
-        imageFilename,
-        acquiredImage.dataUrl
-      );
-    } else {
-      imageDownloadId = await fileManager.downloadImageFile(
-        settings.workingDirectory,
-        imageFilename,
-        acquiredImage.imageUrl || pageResult.imageUrl
+        imageDownloadId = await fileManager.downloadDataUrlFile(
+          settings.workingDirectory,
+          imageFilename,
+          acquiredImage.dataUrl
+        );
+      } else {
+        imageDownloadId = await fileManager.downloadImageFile(
+          settings.workingDirectory,
+          imageFilename,
+          acquiredImage.imageUrl || pageResult.imageUrl
+        );
+      }
+    } catch (error) {
+      throw new Error(
+        `Image save failed: ${error instanceof Error ? error.message : String(error)}`
       );
     }
-  } catch (error) {
-    throw new Error(
-      `Image save failed: ${error instanceof Error ? error.message : String(error)}`
-    );
   }
 
-  try {
-    textDownloadId = await fileManager.downloadTextFile(
-      settings.workingDirectory,
-      textFilename,
-      textContent
-    );
-  } catch (error) {
-    throw new Error(
-      `Tag save failed: ${error instanceof Error ? error.message : String(error)}`
-    );
+  if (saveTags) {
+    try {
+      textDownloadId = await fileManager.downloadTextFile(
+        settings.workingDirectory,
+        textFilename,
+        textContent
+      );
+    } catch (error) {
+      throw new Error(
+        `Tag save failed: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
   }
 
 
@@ -674,7 +715,9 @@ async function captureCurrentPostResponse() {
       textFilename,
       imageDownloadId,
       textDownloadId,
-      workingDirectory: settings.workingDirectory
+      workingDirectory: settings.workingDirectory,
+      saveImage,
+      saveTags
     },
     formatted
   };
